@@ -339,6 +339,7 @@ class ICemTO(DummyPolicyOptimizer):
             evaluation_sequences=jnp.zeros((len(self.dynamics_model_list),) + self.opt_dim),
             exploration_sequence=jnp.zeros(self.opt_dim),
         )
+        self._orx_mode = False   # Flag for ORX: optimize policy, random eta
         self._init_fn()
 
     def _init_fn(self):
@@ -405,23 +406,79 @@ class ICemTO(DummyPolicyOptimizer):
             key = sampling_rng[0]
             sampling_rng = sampling_rng[1:]
             opt_size = self.opt_dim[0] * self.opt_dim[1]
-            colored_samples = jax.vmap(
-                lambda rng: powerlaw_psd_gaussian(exponent=self.opt_params.exponent, size=opt_size, rng=rng))(
-                sampling_rng)
-            action_samples = mu + colored_samples * sig
-            action_samples = jnp.clip(action_samples, a_max=1, a_min=-1)
-            action_samples = action_samples.reshape((-1,) + self.opt_dim)
-            action_samples = jnp.concatenate([action_samples, prev_elites], axis=0)
+            
+            if self._orx_mode:
+                # ORX: Optimize actions (first dim) but use random eta (remaining dims)
+                action_dim = 1  # Actions only
+                eta_dim = self.opt_dim[1] - action_dim  # Eta dimensions
+                
+                # Generate colored noise for actions only
+                action_opt_size = self.opt_dim[0] * action_dim
+                colored_samples = jax.vmap(
+                    lambda rng: powerlaw_psd_gaussian(exponent=self.opt_params.exponent, size=action_opt_size, rng=rng))(
+                    sampling_rng)
+                
+                # Optimize action part only
+                action_mu = mu.reshape(self.opt_dim)[:, :action_dim].reshape(-1)
+                action_sig = sig.reshape(self.opt_dim)[:, :action_dim].reshape(-1)
+                action_samples = action_mu + colored_samples * action_sig
+                action_samples = jnp.clip(action_samples, a_max=1, a_min=-1)
+                action_samples = action_samples.reshape((self.opt_params.num_samples, self.opt_dim[0], action_dim))
+                
+                # Generate random eta for each sample
+                eta_rng = jax.random.split(key, self.opt_params.num_samples)
+                eta_samples = jax.vmap(
+                    lambda rng: jax.random.uniform(rng, shape=(self.opt_dim[0], eta_dim), minval=-1, maxval=1)
+                )(eta_rng)
+                
+                # Concatenate action + eta for evaluation
+                action_samples = jnp.concatenate([action_samples, eta_samples], axis=-1)
+                action_samples = jnp.concatenate([action_samples, prev_elites], axis=0)
+                
+            else:
+                # Original OpAx: optimize full [action, eta] sequences
+                colored_samples = jax.vmap(
+                    lambda rng: powerlaw_psd_gaussian(exponent=self.opt_params.exponent, size=opt_size, rng=rng))(
+                    sampling_rng)
+                action_samples = mu + colored_samples * sig
+                action_samples = jnp.clip(action_samples, a_max=1, a_min=-1)
+                action_samples = action_samples.reshape((-1,) + self.opt_dim)
+                action_samples = jnp.concatenate([action_samples, prev_elites], axis=0)
+            
             values = jax.vmap(sum_rewards)(action_samples)
             best_elite_idx = jnp.argsort(values, axis=0).squeeze()[-self.opt_params.num_elites:]
             elites = action_samples[best_elite_idx]
             elite_values = values[best_elite_idx]
-            elite_mean = jnp.mean(elites, axis=0)
-            elite_var = jnp.var(elites, axis=0)
-            mean = mu.reshape(self.opt_dim) * self.opt_params.alpha + (1 - self.opt_params.alpha) * elite_mean
-            var = jnp.square(sig.reshape(self.opt_dim)) * self.opt_params.alpha + (
-                        1 - self.opt_params.alpha) * elite_var
-            std = jnp.sqrt(var)
+            
+            if self._orx_mode:
+                # ORX: Only update statistics for action dimensions
+                action_elites = elites[:, :, :1]  # Only action part
+                elite_mean_action = jnp.mean(action_elites, axis=0)
+                elite_var_action = jnp.var(action_elites, axis=0)
+                
+                # Update only action part of mean/variance
+                action_mu_old = mu.reshape(self.opt_dim)[:, :1]
+                action_sig_old = sig.reshape(self.opt_dim)[:, :1]
+                
+                mean_action = action_mu_old * self.opt_params.alpha + (1 - self.opt_params.alpha) * elite_mean_action
+                var_action = jnp.square(action_sig_old) * self.opt_params.alpha + (1 - self.opt_params.alpha) * elite_var_action
+                std_action = jnp.sqrt(var_action)
+                
+                # Keep eta part unchanged (will be resampled anyway)
+                eta_mu_old = mu.reshape(self.opt_dim)[:, 1:]
+                eta_sig_old = sig.reshape(self.opt_dim)[:, 1:]
+                
+                mean = jnp.concatenate([mean_action, eta_mu_old], axis=-1)
+                std = jnp.concatenate([std_action, eta_sig_old], axis=-1)
+                
+            else:
+                # Original OpAx: update full statistics
+                elite_mean = jnp.mean(elites, axis=0)
+                elite_var = jnp.var(elites, axis=0)
+                mean = mu.reshape(self.opt_dim) * self.opt_params.alpha + (1 - self.opt_params.alpha) * elite_mean
+                var = jnp.square(sig.reshape(self.opt_dim)) * self.opt_params.alpha + (1 - self.opt_params.alpha) * elite_var
+                std = jnp.sqrt(var)
+            
             best_elite = elite_values[-1].squeeze()
             bests = jax.lax.cond(best_val <= best_elite,
                                  get_best_action,
@@ -433,7 +490,16 @@ class ICemTO(DummyPolicyOptimizer):
             best_val = bests[0]
             best_seq = bests[-1]
             outs = [best_val, best_seq]
-            elite_set = jnp.atleast_2d(elites[-num_prev_elites_per_iter:]).reshape((-1,) + self.opt_dim)
+            
+            if self._orx_mode:
+                # ORX: Only keep action elites for next iteration  
+                elite_set = jnp.atleast_2d(elites[-num_prev_elites_per_iter:, :, :1]).reshape((-1, self.opt_dim[0], 1))
+                # Pad with zeros for eta (will be resampled)
+                eta_padding = jnp.zeros((elite_set.shape[0], self.opt_dim[0], self.opt_dim[1] - 1))
+                elite_set = jnp.concatenate([elite_set, eta_padding], axis=-1)
+            else:
+                elite_set = jnp.atleast_2d(elites[-num_prev_elites_per_iter:]).reshape((-1,) + self.opt_dim)
+                
             carry = [key, mean, std, best_val, best_seq, elite_set]
             return carry, outs
 
@@ -529,6 +595,10 @@ class ICemTO(DummyPolicyOptimizer):
     @property
     def dynamics_model(self):
         return self.dynamics_model_list[0]
+        
+    def _set_orx_mode(self, mode: bool):
+        """Set ORX mode for optimizing policy with random eta."""
+        self._orx_mode = mode
 
 
 if __name__ == "__main__":

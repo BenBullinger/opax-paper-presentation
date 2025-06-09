@@ -26,7 +26,7 @@ def experiment(logs_dir: str, use_wandb: bool, exp_name: str, time_limit: int, n
                num_epochs: int, rollout_steps: int, normalize: bool, action_normalize: bool, validate: bool,
                record_test_video: bool, validation_buffer_size: int, validation_batch_size: int,
                seed: int, exploration_strategy: str, use_log: bool, use_al: bool, action_cost: float = 0.0,
-               time_limit_eval: Optional[int] = None):
+               time_limit_eval: Optional[int] = None, noise_level: float = 1.0):
     """ Run experiment for a given method and environment. """
     import jax.numpy as jnp
     """ Environment """
@@ -53,7 +53,7 @@ def experiment(logs_dir: str, use_wandb: bool, exp_name: str, time_limit: int, n
         'num_samples': num_samples,
         'num_elites': num_elites,
         'num_steps': num_steps,
-        'exponent': 0.25,
+        'exponent': noise_level,
         'train_steps_per_model_update': 25,
         'transitions_per_update': 500,
         'sac_kwargs': sac_kwargs,
@@ -207,6 +207,10 @@ def experiment(logs_dir: str, use_wandb: bool, exp_name: str, time_limit: int, n
         video_prefix += 'Optimistic'
         if exploration_strategy == 'Uniform':
             video_prefix += 'Uniform'
+        elif exploration_strategy == 'ORX':
+            video_prefix += 'ORX'
+            # For ORX, enable random noise to sample eta uniformly from [-1,1]^d
+            # Note: noise_level is already passed as parameter and used in optimizer_kwargs
 
     agent = ModelBasedAgent(
         train_steps=train_steps,
@@ -221,6 +225,7 @@ def experiment(logs_dir: str, use_wandb: bool, exp_name: str, time_limit: int, n
         policy_optimizer_name=optimizer_type,
         optimizer_kwargs=optimizer_kwargs,
         horizon=horizon,
+        exploration_strategy=exploration_strategy,
     )
 
     USE_WANDB = use_wandb
@@ -331,6 +336,7 @@ def main(args):
         use_al=args.use_al,
         time_limit_eval=args.time_limit_eval,
         action_cost=args.action_cost,
+        noise_level=args.noise_level,
     )
 
     t_end = time.time()
@@ -386,16 +392,16 @@ if __name__ == '__main__':
 
     # trainer experiment args
     parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--max_train_steps', type=int, default=5000)
+    parser.add_argument('--max_train_steps', type=int, default=2000)#5000)
     parser.add_argument('--eval_freq', type=int, default=1)
-    parser.add_argument('--total_train_steps', type=int, default=2500)
+    parser.add_argument('--total_train_steps', type=int, default=1000)#2500)
     parser.add_argument('--buffer_size', type=int, default=1000000)
     parser.add_argument('--exploration_steps', type=int, default=0)
     parser.add_argument('--eval_episodes', type=int, default=1)
     parser.add_argument('--train_freq', type=int, default=1)
-    parser.add_argument('--train_steps', type=int, default=5000)
+    parser.add_argument('--train_steps', type=int, default=2000)#5000)
     parser.add_argument('--num_epochs', type=int, default=-1)
-    parser.add_argument('--rollout_steps', type=int, default=200)
+    parser.add_argument('--rollout_steps', type=int, default=50)#200)
     parser.add_argument('--normalize', default=True, action="store_true")
     parser.add_argument('--action_normalize', default=True, action="store_true")
     parser.add_argument('--validate', default=True, action="store_true")
@@ -407,6 +413,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_al', default=False, action="store_true")
     parser.add_argument('--action_cost', type=float, default=0.0)
     parser.add_argument('--time_limit_eval', type=int, default=200)
+    parser.add_argument('--noise_level', type=float, default=1.0)
 
     # general args
     parser.add_argument('--exp_result_folder', type=str, default=None)

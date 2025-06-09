@@ -1,13 +1,5 @@
-# Optimistic Active Exploration of Dynamical Systems
-Implementation Model-based RL algorithms with basic optimizer.
+# Optimistic Random Exploration
 
-Currently implemented:
-1. SAC
-2. CEM optimizer
-3. BNNs for model learning with SVGD.
+This repository contains a presentation of the paper: ["Optimistic Active Exploration of Dynamical Systems" (Sukhija et al., 2023)](https://arxiv.org/abs/2306.12371) (code available at: [lasgroup/opax](https://github.com/lasgroup/opax)) as as part of the course "Foundations of Reinforcement Learning (263-5255-00L)" at ETH Zurich.
 
-# Installation of library
-pip install .
-
-# Installation for GPU with Cuda 11
-pip install https://storage.googleapis.com/jax-releases/cuda11/jaxlib-0.4.13+cuda11.cudnn86-cp310-cp310-manylinux2014_x86_64.whl
+It contains experiments with an additional baseline which we call "Optimistic Random Exploration" (ORX), which replaces the maximization over the hallucination policy $\eta\in[-1,1]^{\dim\mathcal{S}}$ in the OpAx optimal control problem by a random sampling procedure.

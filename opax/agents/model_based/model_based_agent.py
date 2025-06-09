@@ -36,6 +36,7 @@ class ModelBasedAgent(DummyAgent):
     reset_optimizer_params_for: int, number of initial training steps for which the policy optimizer is reset
     log_full_training: bool, if model training should be logged
     log_agent_training: bool, if agent training should be logged
+    exploration_strategy: str, exploration strategy ('Optimistic' for OpAx, 'ORX' for ORX)
     """
     def __init__(
             self,
@@ -53,6 +54,7 @@ class ModelBasedAgent(DummyAgent):
             reset_optimizer_params_for: int = 5,
             log_full_training: bool = False,
             log_agent_training: bool = False,
+            exploration_strategy: str = "Optimistic",
             *args,
             **kwargs,
     ):
@@ -112,8 +114,13 @@ class ModelBasedAgent(DummyAgent):
         self.update_steps = 0
         self.log_agent_training = log_agent_training
         self.log_full_training = log_full_training
+        self.exploration_strategy = exploration_strategy
         if init_function:
             self._init_fn()
+        
+        # Set ORX mode flag on the optimizer if using ORX
+        if self.exploration_strategy == 'ORX' and hasattr(self.policy_optimizer, '_set_orx_mode'):
+            self.policy_optimizer._set_orx_mode(True)
 
     def _init_fn(self):
         """Creates model training function"""
